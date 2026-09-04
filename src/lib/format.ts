@@ -95,6 +95,12 @@ export function sinceShort(iso: string, now = Date.now()): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
+/** "just now", "5h ago", "2d ago". */
+export function ago(iso: string, now = Date.now()): string {
+  const short = sinceShort(iso, now);
+  return short === "now" ? "just now" : `${short} ago`;
+}
+
 /** Position size in the symbol's own units: lots to 2dp, coins compacted. */
 export function size(value: number, unit: string): string {
   if (unit === "lots") return `${grouped(value, 2)} ${unit}`;

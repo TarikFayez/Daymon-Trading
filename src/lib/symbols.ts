@@ -26,6 +26,8 @@ export type SymbolMeta = {
   volume: number;
   /** What one unit of position size is called on the ticket. */
   unit: string;
+  /** Dollars per 1.00 price move, per unit of size. */
+  contractValue: number;
 };
 
 export const SYMBOL_META: Record<Symbol_, SymbolMeta> = {
@@ -39,6 +41,7 @@ export const SYMBOL_META: Record<Symbol_, SymbolMeta> = {
     vol: 0.006,
     volume: 4200,
     unit: "lots",
+    contractValue: 5000,
   },
   XAUUSD: {
     symbol: "XAUUSD",
@@ -50,6 +53,7 @@ export const SYMBOL_META: Record<Symbol_, SymbolMeta> = {
     vol: 0.0035,
     volume: 9800,
     unit: "lots",
+    contractValue: 100,
   },
   XRPUSDT: {
     symbol: "XRPUSDT",
@@ -61,6 +65,7 @@ export const SYMBOL_META: Record<Symbol_, SymbolMeta> = {
     vol: 0.009,
     volume: 2_400_000,
     unit: "XRP",
+    contractValue: 1,
   },
 };
 

@@ -252,12 +252,6 @@ async function seedPositions(accounts: Map<string, string>) {
 /* Journal                                                                      */
 /* -------------------------------------------------------------------------- */
 
-const CONTRACT_VALUE: Record<Symbol_, number> = {
-  XAGUSD: 5000,
-  XAUUSD: 100,
-  XRPUSDT: 1,
-};
-
 type TradeSpec = {
   symbol: Symbol_;
   side: "LONG" | "SHORT";
@@ -307,14 +301,15 @@ const LAST_MONTH: TradeSpec[] = [
 function tradeRows(
   specs: TradeSpec[],
   accounts: Map<string, string>,
+  strategies: Map<Symbol_, string>,
   windowStart: Date,
   windowEnd: Date,
 ): Prisma.TradeCreateManyInput[] {
   const span = windowEnd.getTime() - windowStart.getTime();
 
   return specs.map((spec, i) => {
-    const cv = CONTRACT_VALUE[spec.symbol];
     const meta = SYMBOL_META[spec.symbol];
+    const cv = meta.contractValue;
     const dir = spec.side === "LONG" ? 1 : -1;
     const entry = round(markOf(spec.symbol) + spec.entryOffset, meta.precision);
     const exit = round(entry + (spec.pnl / (spec.size * cv)) * dir, meta.precision);
@@ -343,11 +338,12 @@ function tradeRows(
       },
       openedAt,
       closedAt,
+      strategyId: strategies.get(spec.symbol) ?? null,
     };
   });
 }
 
-async function seedTrades(accounts: Map<string, string>) {
+async function seedTrades(accounts: Map<string, string>, strategies: Map<Symbol_, string>) {
   const monthStart = new Date(Date.UTC(NOW.getUTCFullYear(), NOW.getUTCMonth(), 1));
   const prevMonthStart = new Date(
     Date.UTC(NOW.getUTCFullYear(), NOW.getUTCMonth() - 1, 1),
@@ -355,8 +351,8 @@ async function seedTrades(accounts: Map<string, string>) {
 
   await prisma.trade.createMany({
     data: [
-      ...tradeRows(LAST_MONTH, accounts, prevMonthStart, monthStart),
-      ...tradeRows(THIS_MONTH, accounts, monthStart, NOW),
+      ...tradeRows(LAST_MONTH, accounts, strategies, prevMonthStart, monthStart),
+      ...tradeRows(THIS_MONTH, accounts, strategies, monthStart, NOW),
     ],
   });
 }
@@ -592,17 +588,432 @@ async function seedAnnotations() {
   await prisma.annotation.createMany({ data });
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Strategies, setups, agent proposals                                          */
+/* -------------------------------------------------------------------------- */
+
+type StrategyIds = { byId: Map<string, string>; bySymbol: Map<Symbol_, string> };
+
+async function seedStrategies(): Promise<StrategyIds> {
+  await prisma.strategy.createMany({
+    data: [
+      {
+        slug: "silver-vwap-reclaim",
+        name: "Silver VWAP Reclaim",
+        symbol: "XAGUSD",
+        tf: "4h",
+        bias: "LONG",
+        status: "ACTIVE",
+        thesis:
+          "Silver trends when managed money is adding and price holds the weekly VWAP. Buy the reclaim, not the dip: the 4h has to close back above it with the prior low intact.",
+        rules: {
+          entry: [
+            "4h close above the weekly VWAP",
+            "Prior 4h swing low held on the reclaim bar",
+            "Managed money net long rising on the week",
+          ],
+          invalidation: "4h close back below the weekly VWAP",
+          sizing: { riskPct: 1.0, maxSize: 1.0 },
+          sessions: ["London"],
+        },
+        stats: { trades: 14, winRate: 57, expectancyR: 0.62, pnl30d: 6410, avgHoldHours: 31 },
+      },
+      {
+        slug: "gold-supply-fade",
+        name: "Gold Supply Fade",
+        symbol: "XAUUSD",
+        tf: "1h",
+        bias: "SHORT",
+        status: "ACTIVE",
+        thesis:
+          "Gold fails at marked supply while real yields are rising. Sell the rejection, never the level itself, and get out on a daily close over the prior high.",
+        rules: {
+          entry: [
+            "Price into the marked supply band",
+            "10y real yield above 1.35%",
+            "1h rejection wick larger than 60% of the bar's range",
+          ],
+          invalidation: "Daily close over the prior high",
+          sizing: { riskPct: 0.75, maxSize: 0.75 },
+          sessions: ["London", "New York"],
+        },
+        stats: { trades: 9, winRate: 44, expectancyR: 0.41, pnl30d: 2890, avgHoldHours: 18 },
+      },
+      {
+        slug: "xrp-liquidation-shelf",
+        name: "XRP Liquidation Shelf",
+        symbol: "XRPUSDT",
+        tf: "1h",
+        bias: "LONG",
+        status: "ACTIVE",
+        thesis:
+          "Stacked long liquidations below spot get run and reversed when funding is negative and leverage is leaving. Rest bids just above the shelf; the stop sits under it.",
+        rules: {
+          entry: [
+            "Price within 0.5% of the nearest long-liquidation cluster",
+            "Funding negative at the last settlement",
+            "Open interest down over 24h",
+          ],
+          invalidation: "1h close below the cluster",
+          sizing: { riskPct: 1.5, maxSize: 40000 },
+          sessions: ["Asia", "London"],
+        },
+        stats: { trades: 22, winRate: 55, expectancyR: 0.48, pnl30d: 4120, avgHoldHours: 12 },
+      },
+      {
+        slug: "gold-asia-breakout",
+        name: "Gold Asia Breakout",
+        symbol: "XAUUSD",
+        tf: "1h",
+        bias: "LONG",
+        status: "PAUSED",
+        thesis:
+          "Buy the Asia-session range break into London. Paused after three straight failed breaks in August; back on when the range contracts again.",
+        rules: {
+          entry: ["Asia range under 0.4% of price", "1h close above the Asia high", "DXY flat or lower on the session"],
+          invalidation: "1h close back inside the Asia range",
+          sizing: { riskPct: 0.5, maxSize: 0.5 },
+          sessions: ["London"],
+        },
+        stats: { trades: 11, winRate: 36, expectancyR: -0.18, pnl30d: -1840, avgHoldHours: 6 },
+      },
+    ],
+  });
+
+  const rows = await prisma.strategy.findMany({ where: { status: "ACTIVE" } });
+  const byId = new Map(rows.map((r) => [r.slug, r.id]));
+  const bySymbol = new Map<Symbol_, string>(rows.map((r) => [r.symbol as Symbol_, r.id]));
+  return { byId, bySymbol };
+}
+
+async function seedSetups(strategies: StrategyIds): Promise<Map<string, string>> {
+  const silver = markOf("XAGUSD");
+  const gold = markOf("XAUUSD");
+  const xrp = markOf("XRPUSDT");
+  const shelf = round(xrp - 0.223, 4);
+
+  const specs: Array<Prisma.SetupCreateManyInput & { key: string }> = [
+    {
+      key: "silver-ready",
+      strategyId: strategies.byId.get("silver-vwap-reclaim")!,
+      symbol: "XAGUSD",
+      tf: "4h",
+      state: "READY",
+      score: 78,
+      trigger: `4h closed above the weekly VWAP at ${round(silver - 0.42, 3).toFixed(3)}`,
+      conditions: [
+        { label: "4h close above weekly VWAP", met: true, value: `${silver.toFixed(3)} vs ${round(silver - 0.42, 3).toFixed(3)}` },
+        { label: "Prior 4h low held", met: true, value: `${round(silver - 0.71, 3).toFixed(3)} untouched` },
+        { label: "Managed money rising w/w", met: false, value: "−2,534 contracts" },
+      ],
+      entry: round(silver - 0.2, 3).toFixed(3),
+      stop: round(silver - 1.55, 3).toFixed(3),
+      target: round(silver + 1.3, 3).toFixed(3),
+      detectedAt: at(3 * HOUR + 12 * 60),
+      expiresAt: at(-(9 * HOUR)),
+    },
+    {
+      key: "silver-watch",
+      strategyId: strategies.byId.get("silver-vwap-reclaim")!,
+      symbol: "XAGUSD",
+      tf: "4h",
+      state: "WATCHING",
+      score: 41,
+      trigger: `Retest of the accumulation band at ${round(silver - 1.15, 3).toFixed(3)}`,
+      conditions: [
+        { label: "Price inside the band", met: false, value: `${round(silver - (silver - 1.15), 3).toFixed(3)} above` },
+        { label: "Weekly VWAP still above", met: true, value: "yes" },
+        { label: "Managed money rising w/w", met: false, value: "−2,534 contracts" },
+      ],
+      entry: round(silver - 1.15, 3).toFixed(3),
+      stop: round(silver - 1.55, 3).toFixed(3),
+      target: round(silver + 0.5, 3).toFixed(3),
+      detectedAt: at(7 * HOUR),
+      expiresAt: at(-(2 * DAY)),
+    },
+    {
+      key: "gold-ready",
+      strategyId: strategies.byId.get("gold-supply-fade")!,
+      symbol: "XAUUSD",
+      tf: "1h",
+      state: "READY",
+      score: 84,
+      trigger: `1h rejection from supply at ${round(gold + 34, 2).toFixed(2)}`,
+      conditions: [
+        { label: "Into the supply band", met: true, value: `${round(gold + 34, 2).toFixed(2)}–${round(gold + 52, 2).toFixed(2)}` },
+        { label: "10y real yield above 1.35%", met: true, value: "1.56%" },
+        { label: "Rejection wick > 60% of range", met: true, value: "71%" },
+      ],
+      entry: round(gold + 34, 2).toFixed(2),
+      stop: round(gold + 62, 2).toFixed(2),
+      target: round(gold - 78, 2).toFixed(2),
+      detectedAt: at(55 * 60),
+      expiresAt: at(-(5 * HOUR)),
+    },
+    {
+      key: "xrp-triggered",
+      strategyId: strategies.byId.get("xrp-liquidation-shelf")!,
+      symbol: "XRPUSDT",
+      tf: "1h",
+      state: "TRIGGERED",
+      score: 91,
+      trigger: `Bid resting above the $38.4M shelf at ${shelf.toFixed(4)}`,
+      conditions: [
+        { label: "Within 0.5% of the cluster", met: true, value: "0.18% above" },
+        { label: "Funding negative at settlement", met: true, value: "−0.0061%" },
+        { label: "Open interest down 24h", met: true, value: "−$80.6M" },
+      ],
+      entry: round(shelf + 0.006, 4).toFixed(4),
+      stop: round(shelf - 0.04, 4).toFixed(4),
+      target: round(xrp + 0.018, 4).toFixed(4),
+      detectedAt: at(52 * 60 + 40),
+      expiresAt: at(-(4 * HOUR)),
+    },
+    {
+      key: "xrp-watch",
+      strategyId: strategies.byId.get("xrp-liquidation-shelf")!,
+      symbol: "XRPUSDT",
+      tf: "1h",
+      state: "WATCHING",
+      score: 52,
+      trigger: `Second shelf at ${round(shelf - 0.078, 4).toFixed(4)} · $21.7M stacked`,
+      conditions: [
+        { label: "Within 0.5% of the cluster", met: false, value: "8.9% above" },
+        { label: "Funding negative at settlement", met: true, value: "−0.0061%" },
+        { label: "Open interest down 24h", met: true, value: "−$80.6M" },
+      ],
+      entry: round(shelf - 0.072, 4).toFixed(4),
+      stop: round(shelf - 0.118, 4).toFixed(4),
+      target: round(shelf + 0.006, 4).toFixed(4),
+      detectedAt: at(5 * HOUR),
+      expiresAt: at(-(20 * HOUR)),
+    },
+  ];
+
+  const ids = new Map<string, string>();
+  for (const { key, ...data } of specs) {
+    const row = await prisma.setup.create({ data });
+    ids.set(key, row.id);
+  }
+  return ids;
+}
+
+async function seedProposals(
+  accounts: Map<string, string>,
+  strategies: StrategyIds,
+  setups: Map<string, string>,
+) {
+  const silver = markOf("XAGUSD");
+  const gold = markOf("XAUUSD");
+  const xrp = markOf("XRPUSDT");
+  const shelf = round(xrp - 0.223, 4);
+
+  // P1 — XRP, clean: every check passes, one click sends it.
+  const xrpEntry = round(shelf + 0.006, 4);
+  const xrpStop = round(shelf - 0.04, 4);
+  const xrpTarget = round(xrp + 0.018, 4);
+  const xrpSize = 15000;
+  const xrpRisk = round(xrpSize * (xrpEntry - xrpStop), 2);
+  await prisma.proposal.create({
+    data: {
+      strategyId: strategies.byId.get("xrp-liquidation-shelf")!,
+      setupId: setups.get("xrp-triggered")!,
+      accountId: accounts.get("BloFin Perps")!,
+      symbol: "XRPUSDT",
+      side: "LONG",
+      size: xrpSize.toFixed(6),
+      entry: xrpEntry.toFixed(4),
+      stop: xrpStop.toFixed(4),
+      target: xrpTarget.toFixed(4),
+      riskUsd: xrpRisk.toFixed(2),
+      rr: ((xrpTarget - xrpEntry) / (xrpEntry - xrpStop)).toFixed(2),
+      rationale: `Rest a bid at ${xrpEntry.toFixed(4)}, 0.2% above the $38.4M long-liquidation shelf. Funding has paid longs for six settlements and $80.6M of open interest left in 24h — leverage is leaving while the shelf holds. Stop under the shelf, first target at the plan's ${xrpTarget.toFixed(2)}.`,
+      checks: [
+        { label: "Funding negative", pass: true, detail: "−0.0061% at the last settlement" },
+        { label: "Size within cap", pass: true, detail: "15,000 of 40,000 XRP; book holds 17,000 net" },
+        { label: "Risk within 1.5%", pass: true, detail: `$${xrpRisk.toFixed(0)} = ${((xrpRisk / 48220) * 100).toFixed(2)}% of $48,220` },
+        { label: "Session allowed", pass: true, detail: "London" },
+      ],
+      state: "PROPOSED",
+      createdAt: at(52 * 60),
+      expiresAt: at(-(38 * 60)),
+    },
+  });
+
+  // P2 — Silver: right setup, wrong book. The size cap blocks it.
+  const agEntry = round(silver - 0.2, 3);
+  const agStop = round(silver - 1.55, 3);
+  const agTarget = round(silver + 1.3, 3);
+  const agSize = 0.3;
+  const agRisk = round(agSize * 5000 * (agEntry - agStop), 2);
+  await prisma.proposal.create({
+    data: {
+      strategyId: strategies.byId.get("silver-vwap-reclaim")!,
+      setupId: setups.get("silver-ready")!,
+      accountId: accounts.get("FundedNext 200K")!,
+      symbol: "XAGUSD",
+      side: "LONG",
+      size: agSize.toFixed(6),
+      entry: agEntry.toFixed(3),
+      stop: agStop.toFixed(3),
+      target: agTarget.toFixed(3),
+      riskUsd: agRisk.toFixed(2),
+      rr: ((agTarget - agEntry) / (agEntry - agStop)).toFixed(2),
+      rationale: `4h closed above the weekly VWAP at ${round(silver - 0.42, 3).toFixed(3)} and the prior 4h low held. This is the add level written in the plan, not a new entry. Proposing 0.30 lots on the 200K against the existing 0.55.`,
+      checks: [
+        { label: "Above weekly VWAP", pass: true, detail: `${silver.toFixed(3)} vs ${round(silver - 0.42, 3).toFixed(3)}` },
+        { label: "Size within cap", pass: false, detail: "book holds 0.85 lots against a 1.00 cap — 0.30 would take it to 1.15" },
+        { label: "Risk within 1.0%", pass: true, detail: `$${agRisk.toFixed(0)} = ${((agRisk / 207430) * 100).toFixed(2)}% of $207,430` },
+        { label: "Session allowed", pass: true, detail: "London" },
+      ],
+      state: "PROPOSED",
+      createdAt: at(2 * HOUR + 20 * 60),
+      expiresAt: at(-(6 * HOUR)),
+    },
+  });
+
+  // P3 — Gold: approved four days ago; it is the open XAUUSD short on the book.
+  const auEntry = round(gold + 21.4, 2);
+  const auStop = round(gold + 62, 2);
+  const auTarget = round(gold - 78, 2);
+  const auRisk = round(0.4 * 100 * (auStop - auEntry), 2);
+  const filledAt = at(4 * DAY + 9 * HOUR);
+  const goldProposal = await prisma.proposal.create({
+    data: {
+      strategyId: strategies.byId.get("gold-supply-fade")!,
+      setupId: null,
+      accountId: accounts.get("FundedNext 200K")!,
+      symbol: "XAUUSD",
+      side: "SHORT",
+      size: "0.400000",
+      entry: auEntry.toFixed(2),
+      stop: auStop.toFixed(2),
+      target: auTarget.toFixed(2),
+      riskUsd: auRisk.toFixed(2),
+      rr: ((auEntry - auTarget) / (auStop - auEntry)).toFixed(2),
+      rationale: `Rejection from the ${round(gold + 34, 2).toFixed(2)} supply band on a 71% wick with the 10y real yield at 1.58%. Selling the rejection per the plan; out on a daily close over ${round(gold + 52, 2).toFixed(2)}.`,
+      checks: [
+        { label: "Into supply", pass: true, detail: "rejection wick 71% of range" },
+        { label: "Real yield above 1.35%", pass: true, detail: "1.58%" },
+        { label: "Size within cap", pass: true, detail: "0.40 of 0.75 lots" },
+        { label: "Risk within 0.75%", pass: true, detail: `$${auRisk.toFixed(0)} = ${((auRisk / 207430) * 100).toFixed(2)}%` },
+      ],
+      state: "FILLED",
+      createdAt: new Date(filledAt.getTime() - 4 * 60 * 1000),
+      expiresAt: new Date(filledAt.getTime() + 55 * 60 * 1000),
+      decidedAt: new Date(filledAt.getTime() - 20 * 1000),
+      executedAt: filledAt,
+      fillPrice: round(auEntry - 0.01, 2).toFixed(2),
+      venueOrderId: "FN-8842103",
+    },
+  });
+  await prisma.position.updateMany({
+    where: { symbol: "XAUUSD", side: "SHORT" },
+    data: { proposalId: goldProposal.id },
+  });
+
+  // P4 — XRP, rejected yesterday: the plan changed under it.
+  await prisma.proposal.create({
+    data: {
+      strategyId: strategies.byId.get("xrp-liquidation-shelf")!,
+      setupId: null,
+      accountId: accounts.get("BloFin Perps")!,
+      symbol: "XRPUSDT",
+      side: "LONG",
+      size: "20000.000000",
+      entry: round(xrp - 0.072, 4).toFixed(4),
+      stop: round(xrp - 0.118, 4).toFixed(4),
+      target: round(xrp + 0.16, 4).toFixed(4),
+      riskUsd: (20000 * 0.046).toFixed(2),
+      rr: (0.232 / 0.046).toFixed(2),
+      rationale: "Shelf at 3.49 with $22M stacked and funding at −0.0018%. Thin, but the OI drain supports it.",
+      checks: [
+        { label: "Funding negative", pass: true, detail: "−0.0018% at proposal time" },
+        { label: "Size within cap", pass: true, detail: "20,000 of 40,000 XRP" },
+        { label: "Risk within 1.5%", pass: true, detail: "$920 = 1.91% — over" },
+      ],
+      state: "REJECTED",
+      createdAt: at(26 * HOUR + 15 * 60),
+      expiresAt: at(25 * HOUR + 15 * 60),
+      decidedAt: at(26 * HOUR),
+      rejectReason: "Funding flipped positive before the click — off plan by the time it mattered.",
+    },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Terminal                                                                     */
+/* -------------------------------------------------------------------------- */
+
+type EventSpec = [
+  secondsAgo: number,
+  source: string,
+  kind: "NEWS" | "DATA" | "FLOW" | "SYSTEM" | "AGENT",
+  headline: string,
+  body: string | null,
+  symbols: Symbol_[],
+  impact: "HIGH" | "MEDIUM" | "LOW",
+  direction: "BULLISH" | "BEARISH" | "NEUTRAL",
+];
+
+async function seedTerminal() {
+  const xrp = markOf("XRPUSDT");
+  const shelf = round(xrp - 0.223, 4);
+  const gold = markOf("XAUUSD");
+
+  const events: EventSpec[] = [
+    [14 * 60, "Coinglass", "FLOW", "$14.2M of XRP longs liquidated in the last hour", `Cluster at ${round(xrp - 0.04, 2).toFixed(2)} cleared; next stack sits at ${shelf.toFixed(4)}.`, ["XRPUSDT"], "HIGH", "BEARISH"],
+    [38 * 60, "BloFin", "SYSTEM", "XRPUSDT funding settled at −0.0061%", "Sixth negative settlement in a row. Shorts are paying longs.", ["XRPUSDT"], "MEDIUM", "BULLISH"],
+    [52 * 60, "Agent", "AGENT", `Proposed long XRPUSDT 15,000 at ${round(shelf + 0.006, 4).toFixed(4)} · BloFin Perps`, "XRP Liquidation Shelf. Resting bid 0.2% above the $38.4M shelf. Awaiting approval.", ["XRPUSDT"], "MEDIUM", "NEUTRAL"],
+    [70 * 60, "Reuters", "NEWS", "Fed's Waller: case for a September cut has strengthened", "Front-end yields lower on the headline; 10y real yield −4bp on the day.", ["XAUUSD", "XAGUSD"], "HIGH", "BULLISH"],
+    [105 * 60, "Bloomberg", "DATA", "10y TIPS yield 1.56%, −0.04 on the week", "Gold fade needs real yields above 1.35% — still holds, margin narrowing.", ["XAUUSD"], "MEDIUM", "BULLISH"],
+    [140 * 60, "Agent", "AGENT", "Proposed long XAGUSD 0.30 lots · FundedNext 200K — blocked", "Silver VWAP Reclaim. Book already at 0.85 lots against a 1.00 cap.", ["XAGUSD"], "LOW", "NEUTRAL"],
+    [185 * 60, "LBMA", "DATA", "London silver fix 41.42", null, ["XAGUSD"], "LOW", "NEUTRAL"],
+    [230 * 60, "Coinglass", "FLOW", "XRP open interest −$80.6M in 24h to $356M", "Leverage coming out while price holds — constructive for the shelf bid.", ["XRPUSDT"], "MEDIUM", "BULLISH"],
+    [5 * HOUR, "Reuters", "NEWS", "DXY slips below 96 as euro rallies on the ECB hold", null, ["XAUUSD", "XAGUSD"], "MEDIUM", "BULLISH"],
+    [6 * HOUR + 30 * 60, "CFTC", "DATA", "COT: managed money silver net long 32,710, −2,534 w/w", "Commercials covered 2,997. Specs lightening into the move.", ["XAGUSD"], "MEDIUM", "BEARISH"],
+    [8 * HOUR, "Reuters", "NEWS", "Ripple: RLUSD supply passes $2B", null, ["XRPUSDT"], "LOW", "BULLISH"],
+    [9 * HOUR + 40 * 60, "Bloomberg", "DATA", "US ISM services 52.1 vs 51.0 expected", "Prices paid 58.9. Yields bid on the print.", ["XAUUSD", "XAGUSD"], "MEDIUM", "BEARISH"],
+    [11 * HOUR, "BloFin", "SYSTEM", "Maintenance window complete — perps matching resumed", null, ["XRPUSDT"], "LOW", "NEUTRAL"],
+    [13 * HOUR, "Reuters", "NEWS", "China August silver imports +18% y/y", "Fourth straight monthly rise; Shanghai physical premium at $1.90/oz.", ["XAGUSD"], "MEDIUM", "BULLISH"],
+    [16 * HOUR, "FundedNext", "SYSTEM", "Daily drawdown reset · 200K account used 3.7% of the 5% limit", null, ["XAGUSD", "XAUUSD"], "MEDIUM", "NEUTRAL"],
+    [20 * HOUR, "Coinglass", "FLOW", `$9.1M of XRP shorts liquidated on the move through ${round(xrp - 0.06, 2).toFixed(2)}`, null, ["XRPUSDT"], "MEDIUM", "BULLISH"],
+    [26 * HOUR, "Agent", "AGENT", "Rejected long XRPUSDT 20,000 — funding flipped positive before approval", null, ["XRPUSDT"], "LOW", "NEUTRAL"],
+    [28 * HOUR, "Reuters", "NEWS", `Gold prints record ${round(gold + 44, 0).toLocaleString("en-US")} before fading into the London close`, null, ["XAUUSD"], "HIGH", "BEARISH"],
+    [30 * HOUR, "Bloomberg", "DATA", "US jobless claims 231K vs 229K expected", null, ["XAUUSD"], "LOW", "NEUTRAL"],
+  ];
+
+  await prisma.terminalEvent.createMany({
+    data: events.map(([secondsAgo, source, kind, headline, body, symbols, impact, direction]) => ({
+      time: at(secondsAgo),
+      source,
+      kind,
+      headline,
+      body,
+      symbols,
+      impact,
+      direction,
+      positionIds: [],
+    })),
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Entry point                                                                  */
 /* -------------------------------------------------------------------------- */
 
 async function main() {
   // Order matters: children before parents.
+  await prisma.terminalEvent.deleteMany();
   await prisma.annotation.deleteMany();
   await prisma.positioningSnapshot.deleteMany();
   await prisma.candle.deleteMany();
   await prisma.plan.deleteMany();
   await prisma.trade.deleteMany();
+  await prisma.proposal.deleteMany();
+  await prisma.setup.deleteMany();
+  await prisma.strategy.deleteMany();
   await prisma.position.deleteMany();
   await prisma.account.deleteMany();
 
@@ -610,10 +1021,14 @@ async function main() {
   const candleCount = await seedCandles();
   await seedPlans();
   await seedPositions(accounts);
-  await seedTrades(accounts);
+  const strategies = await seedStrategies();
+  const setups = await seedSetups(strategies);
+  await seedProposals(accounts, strategies, setups);
+  await seedTrades(accounts, strategies.bySymbol);
   await seedPerpPositioning();
   await seedMetalPositioning();
   await seedAnnotations();
+  await seedTerminal();
 
   const counts = {
     accounts: await prisma.account.count(),
@@ -623,6 +1038,10 @@ async function main() {
     candles: candleCount,
     annotations: await prisma.annotation.count(),
     positioningSnapshots: await prisma.positioningSnapshot.count(),
+    strategies: await prisma.strategy.count(),
+    setups: await prisma.setup.count(),
+    proposals: await prisma.proposal.count(),
+    terminalEvents: await prisma.terminalEvent.count(),
   };
 
   console.log("seeded", counts);

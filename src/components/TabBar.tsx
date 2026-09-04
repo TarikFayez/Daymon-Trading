@@ -8,6 +8,8 @@ const TABS = [
   { href: "/journal", label: "Journal" },
   { href: "/positioning", label: "Positioning" },
   { href: "/chart", label: "Chart" },
+  { href: "/strategy", label: "Strategy" },
+  { href: "/terminal", label: "Terminal" },
 ] as const;
 
 /** The only navigation in the app. Active pill is white; the rest recede. */
@@ -17,7 +19,7 @@ export function TabBar() {
   return (
     <nav
       aria-label="Panels"
-      className="no-scrollbar -mx-5 flex gap-2 overflow-x-auto px-5 py-3"
+      className="flex flex-wrap gap-2 py-3"
     >
       {TABS.map((tab) => {
         const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);

@@ -184,4 +184,154 @@ export type Providers = {
   positioning: PositioningProvider;
   journal: JournalProvider;
   annotations: AnnotationProvider;
+  strategies: StrategyProvider;
+  agent: AgentProvider;
+  execution: ExecutionProvider;
+  terminal: TerminalProvider;
 };
+
+/* -------------------------------------------------------------------------- */
+/* Strategy, setups, agent, execution, terminal                                 */
+/* -------------------------------------------------------------------------- */
+
+export type StrategyStatus = "ACTIVE" | "PAUSED" | "RETIRED";
+
+export type StrategyRules = {
+  entry: string[];
+  invalidation: string;
+  sizing: { riskPct: number; maxSize: number };
+  sessions: string[];
+};
+
+export type StrategyStats = {
+  trades: number;
+  winRate: number;
+  expectancyR: number;
+  pnl30d: number;
+  avgHoldHours: number;
+};
+
+export type StrategyView = {
+  id: string;
+  slug: string;
+  name: string;
+  symbol: Symbol_;
+  tf: Timeframe;
+  bias: Bias;
+  status: StrategyStatus;
+  thesis: string;
+  rules: StrategyRules;
+  stats: StrategyStats;
+  readySetups: number;
+  openProposals: number;
+};
+
+export type SetupState = "WATCHING" | "READY" | "TRIGGERED" | "EXPIRED";
+
+export type SetupCondition = { label: string; met: boolean; value: string };
+
+export type SetupView = {
+  id: string;
+  strategyId: string;
+  symbol: Symbol_;
+  tf: Timeframe;
+  state: SetupState;
+  score: number;
+  trigger: string;
+  conditions: SetupCondition[];
+  entry: number;
+  stop: number;
+  target: number;
+  detectedAt: string;
+  expiresAt: string;
+};
+
+export type ProposalState =
+  | "PROPOSED"
+  | "APPROVED"
+  | "SENT"
+  | "FILLED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "CANCELLED";
+
+export type ProposalCheck = { label: string; pass: boolean; detail: string };
+
+export type ProposalView = {
+  id: string;
+  strategyId: string;
+  strategySlug: string;
+  strategyName: string;
+  setupId: string | null;
+  account: string;
+  accountId: string;
+  symbol: Symbol_;
+  side: Side;
+  size: number;
+  entry: number;
+  stop: number;
+  target: number;
+  riskUsd: number;
+  rr: number;
+  rationale: string;
+  checks: ProposalCheck[];
+  /** True when any check fails — approval is refused, not just discouraged. */
+  blocked: boolean;
+  state: ProposalState;
+  createdAt: string;
+  expiresAt: string;
+  decidedAt: string | null;
+  executedAt: string | null;
+  fillPrice: number | null;
+  venueOrderId: string | null;
+  rejectReason: string | null;
+};
+
+export interface StrategyProvider {
+  list(): Promise<StrategyView[]>;
+  get(slug: string): Promise<StrategyView | null>;
+  setups(strategyId: string): Promise<SetupView[]>;
+}
+
+export type Decision = "APPROVE" | "REJECT";
+
+/**
+ * The strategy agent. Today it is the scanner's proposals coming out of
+ * Postgres; later it is a model reasoning over the same providers this UI
+ * reads. Either way the human clicks, and the state machine is the same.
+ */
+export interface AgentProvider {
+  proposals(opts?: { strategyId?: string; states?: ProposalState[] }): Promise<ProposalView[]>;
+  get(id: string): Promise<ProposalView | null>;
+  /** APPROVE runs PROPOSED → APPROVED → SENT → FILLED via the ExecutionProvider. */
+  decide(id: string, decision: Decision, reason?: string): Promise<ProposalView>;
+}
+
+export type Fill = { venueOrderId: string; fillPrice: number; filledAt: string };
+
+/** Sends the order. Mock fills instantly; BloFin and FundedNext replace it. */
+export interface ExecutionProvider {
+  execute(proposal: ProposalView): Promise<Fill>;
+}
+
+export type TerminalKind = "NEWS" | "DATA" | "FLOW" | "SYSTEM" | "AGENT";
+export type Impact = "HIGH" | "MEDIUM" | "LOW";
+export type Direction = "BULLISH" | "BEARISH" | "NEUTRAL";
+
+export type TerminalEventView = {
+  id: string;
+  time: string;
+  source: string;
+  kind: TerminalKind;
+  headline: string;
+  body: string | null;
+  symbols: Symbol_[];
+  impact: Impact;
+  direction: Direction;
+  /** Open positions this touches, as short labels: "XAGUSD long 0.55 · FundedNext 200K". */
+  touches: string[];
+};
+
+export interface TerminalProvider {
+  feed(opts?: { sinceHours?: number }): Promise<TerminalEventView[]>;
+}

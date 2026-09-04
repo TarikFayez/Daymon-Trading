@@ -14,14 +14,15 @@ datasource db {
 
 /// Trading venue / prop account the desk runs size on.
 model Account {
-  id        String     @id @default(cuid())
-  name      String     @unique
+  id        String      @id @default(cuid())
+  name      String      @unique
   broker    String
   kind      AccountKind
-  currency  String     @default("USD")
-  equity    Decimal    @db.Decimal(18, 2)
+  currency  String      @default("USD")
+  equity    Decimal     @db.Decimal(18, 2)
   positions Position[]
   trades    Trade[]
+  proposals Proposal[]
 
   @@map("accounts")
 }
@@ -33,20 +34,23 @@ enum AccountKind {
 
 /// An open position on one account.
 model Position {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   accountId     String
-  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   symbol        String
   side          Side
-  size          Decimal  @db.Decimal(18, 6)
-  entry         Decimal  @db.Decimal(18, 6)
-  markPrice     Decimal  @db.Decimal(18, 6)
-  stop          Decimal  @db.Decimal(18, 6)
-  target        Decimal? @db.Decimal(18, 6)
+  size          Decimal   @db.Decimal(18, 6)
+  entry         Decimal   @db.Decimal(18, 6)
+  markPrice     Decimal   @db.Decimal(18, 6)
+  stop          Decimal   @db.Decimal(18, 6)
+  target        Decimal?  @db.Decimal(18, 6)
   /// Dollars per 1.0 move in the symbol, for one unit of `size`.
-  contractValue Decimal  @db.Decimal(18, 6)
+  contractValue Decimal   @db.Decimal(18, 6)
   openedAt      DateTime
-  updatedAt     DateTime @updatedAt
+  updatedAt     DateTime  @updatedAt
+  /// Set when the position was opened by approving an agent proposal.
+  proposalId    String?   @unique
+  proposal      Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
 
   @@index([symbol])
   @@map("positions")
@@ -59,16 +63,16 @@ enum Side {
 
 /// A closed trade, with the market context captured at entry.
 model Trade {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   accountId       String
-  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account         Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   symbol          String
   side            Side
-  size            Decimal  @db.Decimal(18, 6)
-  entry           Decimal  @db.Decimal(18, 6)
-  exit            Decimal  @db.Decimal(18, 6)
-  pnl             Decimal  @db.Decimal(18, 2)
-  rMultiple       Decimal  @db.Decimal(8, 2)
+  size            Decimal   @db.Decimal(18, 6)
+  entry           Decimal   @db.Decimal(18, 6)
+  exit            Decimal   @db.Decimal(18, 6)
+  pnl             Decimal   @db.Decimal(18, 2)
+  rMultiple       Decimal   @db.Decimal(8, 2)
   inPlan          Boolean
   /// Why it was off plan, when it was. Null when in plan.
   deviation       String?
@@ -76,6 +80,8 @@ model Trade {
   contextSnapshot Json
   openedAt        DateTime
   closedAt        DateTime
+  strategyId      String?
+  strategy        Strategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
 
   @@index([symbol])
   @@index([closedAt])
@@ -148,4 +154,158 @@ model PositioningSnapshot {
   @@unique([symbol, time])
   @@index([symbol, time])
   @@map("positioning_snapshots")
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Strategy, setups, agent proposals, terminal
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// A written, rule-bound way of trading one symbol. The thing setups are
+/// scanned for and proposals are checked against.
+model Strategy {
+  id        String         @id @default(cuid())
+  slug      String         @unique
+  name      String
+  symbol    String
+  tf        String
+  bias      Bias
+  status    StrategyStatus @default(ACTIVE)
+  thesis    String
+  /// { entry: string[], invalidation: string, sizing: { riskPct, maxSize }, sessions: string[] }
+  rules     Json
+  /// { trades, winRate, expectancyR, pnl30d, avgHoldHours }
+  stats     Json
+  createdAt DateTime       @default(now())
+  setups    Setup[]
+  proposals Proposal[]
+  trades    Trade[]
+
+  @@map("strategies")
+}
+
+enum StrategyStatus {
+  ACTIVE
+  PAUSED
+  RETIRED
+}
+
+/// A potential trade the scanner has found for a strategy.
+model Setup {
+  id         String     @id @default(cuid())
+  strategyId String
+  strategy   Strategy   @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  symbol     String
+  tf         String
+  state      SetupState
+  /// Confluence 0–100: how many of the strategy's conditions are met, weighted.
+  score      Int
+  trigger    String
+  /// [{ label, met, value }]
+  conditions Json
+  entry      Decimal    @db.Decimal(18, 6)
+  stop       Decimal    @db.Decimal(18, 6)
+  target     Decimal    @db.Decimal(18, 6)
+  detectedAt DateTime
+  expiresAt  DateTime
+  proposals  Proposal[]
+
+  @@index([strategyId, state])
+  @@map("setups")
+}
+
+enum SetupState {
+  WATCHING
+  READY
+  TRIGGERED
+  EXPIRED
+}
+
+/// The agent's proposed trade. Sits in PROPOSED until a human clicks.
+/// Approve runs APPROVED → SENT → FILLED through the ExecutionProvider.
+model Proposal {
+  id           String        @id @default(cuid())
+  strategyId   String
+  strategy     Strategy      @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  setupId      String?
+  setup        Setup?        @relation(fields: [setupId], references: [id], onDelete: SetNull)
+  accountId    String
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol       String
+  side         Side
+  size         Decimal       @db.Decimal(18, 6)
+  entry        Decimal       @db.Decimal(18, 6)
+  stop         Decimal       @db.Decimal(18, 6)
+  target       Decimal       @db.Decimal(18, 6)
+  riskUsd      Decimal       @db.Decimal(18, 2)
+  rr           Decimal       @db.Decimal(8, 2)
+  rationale    String
+  /// Plan-compliance gate: [{ label, pass, detail }]. Any failure blocks approval.
+  checks       Json
+  state        ProposalState @default(PROPOSED)
+  createdAt    DateTime      @default(now())
+  expiresAt    DateTime
+  decidedAt    DateTime?
+  executedAt   DateTime?
+  fillPrice    Decimal?      @db.Decimal(18, 6)
+  venueOrderId String?
+  rejectReason String?
+  position     Position?
+
+  @@index([strategyId, state])
+  @@index([state, createdAt])
+  @@map("proposals")
+}
+
+enum ProposalState {
+  PROPOSED
+  APPROVED
+  SENT
+  FILLED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+/// One line on the terminal. News, data prints, flow, venue events, and the
+/// agent's own actions, all tagged with the symbols and open positions they touch.
+model TerminalEvent {
+  id          String       @id @default(cuid())
+  time        DateTime
+  source      String
+  kind        TerminalKind
+  headline    String
+  body        String?
+  symbols     String[]
+  impact      Impact
+  direction   Direction
+  positionIds String[]
+
+  @@index([time])
+  @@map("terminal_events")
+}
+
+enum TerminalKind {
+  NEWS
+  DATA
+  FLOW
+  SYSTEM
+  AGENT
+}
+
+enum Impact {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum Direction {
+  BULLISH
+  BEARISH
+  NEUTRAL
 }
