@@ -1,0 +1,48 @@
+# Local stack: Postgres, a one-shot seeder, and the app.
+#
+#   docker compose up -d db
+#   docker compose run --rm seed
+#   docker compose up app
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dayemon
+      POSTGRES_PASSWORD: dayemon
+      POSTGRES_DB: dayemon
+    ports:
+      - "5432:5432"
+    volumes:
+      - dayemon-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dayemon -d dayemon"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  seed:
+    build:
+      context: .
+      target: seeder
+    environment:
+      DATABASE_URL: postgresql://dayemon:dayemon@db:5432/dayemon?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      target: runner
+    environment:
+      DATABASE_URL: postgresql://dayemon:dayemon@db:5432/dayemon?schema=public
+      LOG_LEVEL: info
+      PORT: "8080"
+    ports:
+      - "3000:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  dayemon-pgdata:

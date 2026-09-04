@@ -1,0 +1,151 @@
+// DAYEMON — data model for the mockup phase.
+// Every table here is the storage behind a MockProvider in src/lib/providers.
+// When a real integration lands, the provider swaps and the schema stays.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Trading venue / prop account the desk runs size on.
+model Account {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  broker    String
+  kind      AccountKind
+  currency  String     @default("USD")
+  equity    Decimal    @db.Decimal(18, 2)
+  positions Position[]
+  trades    Trade[]
+
+  @@map("accounts")
+}
+
+enum AccountKind {
+  PROP
+  LIVE
+}
+
+/// An open position on one account.
+model Position {
+  id            String   @id @default(cuid())
+  accountId     String
+  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol        String
+  side          Side
+  size          Decimal  @db.Decimal(18, 6)
+  entry         Decimal  @db.Decimal(18, 6)
+  markPrice     Decimal  @db.Decimal(18, 6)
+  stop          Decimal  @db.Decimal(18, 6)
+  target        Decimal? @db.Decimal(18, 6)
+  /// Dollars per 1.0 move in the symbol, for one unit of `size`.
+  contractValue Decimal  @db.Decimal(18, 6)
+  openedAt      DateTime
+  updatedAt     DateTime @updatedAt
+
+  @@index([symbol])
+  @@map("positions")
+}
+
+enum Side {
+  LONG
+  SHORT
+}
+
+/// A closed trade, with the market context captured at entry.
+model Trade {
+  id              String   @id @default(cuid())
+  accountId       String
+  account         Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  symbol          String
+  side            Side
+  size            Decimal  @db.Decimal(18, 6)
+  entry           Decimal  @db.Decimal(18, 6)
+  exit            Decimal  @db.Decimal(18, 6)
+  pnl             Decimal  @db.Decimal(18, 2)
+  rMultiple       Decimal  @db.Decimal(8, 2)
+  inPlan          Boolean
+  /// Why it was off plan, when it was. Null when in plan.
+  deviation       String?
+  /// Funding / OI / session snapshot taken at entry time.
+  contextSnapshot Json
+  openedAt        DateTime
+  closedAt        DateTime
+
+  @@index([symbol])
+  @@index([closedAt])
+  @@map("trades")
+}
+
+/// The week's written plan for one symbol. The thing compliance is measured against.
+model Plan {
+  id           String   @id @default(cuid())
+  symbol       String
+  weekOf       DateTime @db.Date
+  bias         Bias
+  /// Named price levels: [{ label, price, kind }]
+  levels       Json
+  invalidation Decimal  @db.Decimal(18, 6)
+  maxSize      Decimal  @db.Decimal(18, 6)
+  note         String
+  createdAt    DateTime @default(now())
+
+  @@unique([symbol, weekOf])
+  @@map("plans")
+}
+
+enum Bias {
+  LONG
+  SHORT
+  NEUTRAL
+}
+
+/// OHLCV. Mock candles are generated deterministically per symbol/timeframe.
+model Candle {
+  symbol String
+  tf     String
+  /// Bar open time, UTC.
+  time   DateTime
+  o      Float
+  h      Float
+  l      Float
+  c      Float
+  v      Float
+
+  @@id([symbol, tf, time])
+  @@index([symbol, tf, time])
+  @@map("candles")
+}
+
+/// A set of chart drawings for one symbol/timeframe. `items` is the annotation JSON
+/// the chart's annotation renderer consumes directly.
+model Annotation {
+  id        String   @id @default(cuid())
+  symbol    String
+  tf        String
+  /// [{ type: 'hline' | 'trendline' | 'fib' | 'zone' | 'note', ... }]
+  items     Json
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([symbol, tf, createdAt])
+  @@map("annotations")
+}
+
+/// Point-in-time positioning metrics. `metrics` shape varies by symbol
+/// (perp funding/OI/liquidations vs. COT/macro for metals).
+model PositioningSnapshot {
+  id      String   @id @default(cuid())
+  symbol  String
+  time    DateTime
+  metrics Json
+
+  @@unique([symbol, time])
+  @@index([symbol, time])
+  @@map("positioning_snapshots")
+}

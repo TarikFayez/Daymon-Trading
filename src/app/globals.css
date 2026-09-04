@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/*
+ * DAYEMON design tokens.
+ *
+ * Rules the whole UI obeys:
+ *   near-black canvas, one dark grey surface, white type, white active pill.
+ *   green and red are reserved — PnL, targets, invalidation, candles. Nothing else.
+ *   no borders, no shadows, no gradients, no tables.
+ */
+@theme {
+  --color-canvas: #0d0d0d;
+  --color-surface: #1c1c1e;
+  /* One step up from surface, for a chip sitting on a card. */
+  --color-raised: #2c2c2e;
+  --color-ink: #ffffff;
+  --color-muted: #8e8e93;
+  --color-faint: #636366;
+  --color-up: #19c37d;
+  --color-down: #ff5c5c;
+
+  --radius-card: 16px;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue",
+    Arial, sans-serif;
+
+  --text-hero: 44px;
+  --text-hero--line-height: 1.05;
+  --text-hero--letter-spacing: -0.03em;
+}
+
+html {
+  background: var(--color-canvas);
+  /* Keep the safe-area colour right when the panel is short. */
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* Every number on this dashboard is meant to be scanned in a column. */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* The reference has no visible chrome: kill focus rings on pointer, keep them for keys. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--color-muted);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Horizontal scrollers (tab bar, symbol switcher) with no scrollbar furniture. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
