@@ -1,12 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
-import { TabBar } from "@/components/TabBar";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "DAYEMON",
-  description: "Trading operations — positions, journal, positioning, chart.",
+  description: "Trading operations — positions, journal, positioning, chart, strategy, terminal.",
 };
 
 export const viewport: Viewport = {
@@ -15,20 +14,14 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+/**
+ * Root layout is chrome-free. The 680px column lives in `(panels)/layout.tsx`;
+ * `/chart` has its own full-bleed layout so the chart can take the viewport.
+ */
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-dvh">
-        <div className="mx-auto w-full max-w-[680px] px-5 pb-16">
-          <header className="pt-6">
-            <p className="text-[15px] font-semibold tracking-[0.22em] text-ink">
-              DAYEMON
-            </p>
-            <TabBar />
-          </header>
-          <main>{children}</main>
-        </div>
-      </body>
+      <body className="min-h-dvh">{children}</body>
     </html>
   );
 }

@@ -1,4 +1,4 @@
-import { ChartPanel } from "@/components/chart/ChartPanel";
+import { ChartWorkspace } from "@/components/chart/ChartWorkspace";
 import { providers } from "@/lib/providers";
 import { isSymbol, isTimeframe, type Symbol_, type Timeframe } from "@/lib/symbols";
 
@@ -24,5 +24,5 @@ export default async function ChartPage({
     providers.annotations.list(symbol, tf),
   ]);
 
-  return <ChartPanel symbol={symbol} tf={tf} candles={candles} sets={sets} />;
+  return <ChartWorkspace symbol={symbol} tf={tf} candles={candles} sets={sets} />;
 }
